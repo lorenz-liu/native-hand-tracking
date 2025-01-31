@@ -1,141 +1,140 @@
-import time
-
 import cv2
-import mediapipe as mp
+import numpy as np
+
+from native_hand_tracker import NativeHandTracker
 
 
-class HandTracker:
-    def __init__(
-        self, mode=False, max_hands=2, detection_confidence=0.5, tracking_confidence=0.5
-    ):
-        self.mode = mode
-        self.max_hands = max_hands
-        self.detection_confidence = detection_confidence
-        self.tracking_confidence = tracking_confidence
+def draw_info_on_frame(frame, landmarks, pinch_distance=None, pinch_center=None):
+    """Draw additional information on the frame for visualization."""
+    if not landmarks:
+        return frame
 
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=self.mode,
-            max_num_hands=self.max_hands,
-            min_detection_confidence=self.detection_confidence,
-            min_tracking_confidence=self.tracking_confidence,
-        )
-        self.mp_draw = mp.solutions.drawing_utils
+    # Draw finger tip points with labels
+    finger_tips = {"Thumb": 4, "Index": 8, "Middle": 12, "Ring": 16, "Pinky": 20}
 
-        # 定义手部关键点的连接
-        self.HAND_CONNECTIONS = [
-            (0, 1),
-            (1, 2),
-            (2, 3),
-            (3, 4),  # 拇指
-            (0, 5),
-            (5, 6),
-            (6, 7),
-            (7, 8),  # 食指
-            (0, 9),
-            (9, 10),
-            (10, 11),
-            (11, 12),  # 中指
-            (0, 13),
-            (13, 14),
-            (14, 15),
-            (15, 16),  # 无名指
-            (0, 17),
-            (17, 18),
-            (18, 19),
-            (19, 20),  # 小指
-        ]
+    for finger_name, tip_idx in finger_tips.items():
+        if len(landmarks) > tip_idx:
+            x, y = landmarks[tip_idx][1], landmarks[tip_idx][2]
+            cv2.circle(frame, (x, y), 8, (0, 255, 255), -1)
+            cv2.putText(
+                frame,
+                finger_name,
+                (x - 20, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 255),
+                2,
+            )
 
-    def find_hands(self, img, draw=True):
-        """
-        检测图像中的手部并绘制标记
-        """
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        self.results = self.hands.process(img_rgb)
+    # Draw pinch visualization if detected
+    if pinch_distance is not None and pinch_center is not None:
+        # Draw pinch center
+        cv2.circle(frame, (pinch_center[0], pinch_center[1]), 8, (0, 255, 0), -1)
 
-        if self.results.multi_hand_landmarks:
-            for hand_landmarks in self.results.multi_hand_landmarks:
-                if draw:
-                    # 绘制手部关键点
-                    self.mp_draw.draw_landmarks(
-                        img,
-                        hand_landmarks,
-                        self.mp_hands.HAND_CONNECTIONS,
-                        self.mp_draw.DrawingSpec(
-                            color=(0, 255, 0), thickness=2, circle_radius=2
-                        ),
-                        self.mp_draw.DrawingSpec(color=(255, 0, 0), thickness=2),
-                    )
-        return img
-
-    def find_positions(self, img, hand_no=0):
-        """
-        获取指定手的所有关键点位置
-        """
-        landmark_list = []
-        if self.results.multi_hand_landmarks:
-            if len(self.results.multi_hand_landmarks) > hand_no:
-                hand = self.results.multi_hand_landmarks[hand_no]
-                for id, landmark in enumerate(hand.landmark):
-                    height, width, _ = img.shape
-                    cx, cy = int(landmark.x * width), int(landmark.y * height)
-                    landmark_list.append([id, cx, cy])
-        return landmark_list
-
-
-def main():
-    # 设置摄像头
-    cap = cv2.VideoCapture(0)  # 0表示默认摄像头
-
-    # 创建追踪器实例
-    tracker = HandTracker()
-
-    # 用于计算FPS
-    p_time = 0
-    c_time = 0
-
-    while True:
-        success, img = cap.read()
-        if not success:
-            print("Failed to grab frame")
-            break
-
-        # 翻转图像(可选，使显示更直观)
-        img = cv2.flip(img, 1)
-
-        # 检测手部并绘制
-        img = tracker.find_hands(img)
-
-        # 获取手部关键点位置
-        landmark_list = tracker.find_positions(img)
-        if landmark_list:
-            # 示例：打印食指尖端位置 (关键点8)
-            if len(landmark_list) > 8:
-                print(f"食指位置: {landmark_list[8]}")
-
-        # 计算和显示FPS
-        c_time = time.time()
-        fps = 1 / (c_time - p_time)
-        p_time = c_time
-
+        # Display pinch distance
         cv2.putText(
-            img,
-            f"FPS: {int(fps)}",
-            (10, 70),
+            frame,
+            f"Pinch: {pinch_distance:.1f}px",
+            (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
-            (255, 0, 0),
+            (0, 255, 0),
             2,
         )
 
-        # 显示图像
-        cv2.imshow("Hand Tracking", img)
+        # Visual indicator for pinch state
+        if pinch_distance < 40:  # Threshold for pinch detection
+            cv2.putText(
+                frame,
+                "PINCH DETECTED!",
+                (10, 70),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 0),
+                2,
+            )
 
-        # 按'q'退出
+            # Draw line between thumb and index
+            if len(landmarks) > 8:
+                thumb_pos = (landmarks[4][1], landmarks[4][2])
+                index_pos = (landmarks[8][1], landmarks[8][2])
+                cv2.line(frame, thumb_pos, index_pos, (0, 255, 0), 2)
+
+    return frame
+
+
+def main():
+    # Initialize camera and tracker
+    cap = cv2.VideoCapture(0)
+    tracker = NativeHandTracker()
+
+    # Ensure camera is opened successfully
+    if not cap.isOpened():
+        print("Error: Could not open camera")
+        return
+
+    print("Controls:")
+    print("- Press 'q' to quit")
+    print("- Try making a pinch gesture with your thumb and index finger")
+    print("- Move your hand around to see tracking in action")
+
+    while True:
+        # Read frame from camera
+        success, frame = cap.read()
+        if not success:
+            print("Error: Could not read frame")
+            break
+
+        # Flip frame horizontally for more intuitive interaction
+        frame = cv2.flip(frame, 1)
+
+        # Process the frame with hand tracker
+        frame = tracker.process_frame(frame)
+
+        # Get landmark positions
+        landmarks = tracker.get_landmark_positions(frame)
+
+        if landmarks:
+            # Get pinch information
+            pinch_distance, pinch_center = tracker.get_pinch_details(landmarks)
+
+            # Draw additional visualization
+            frame = draw_info_on_frame(frame, landmarks, pinch_distance, pinch_center)
+
+            # Get and display hand rotation
+            rotation = tracker.get_hand_rotation(landmarks)
+            if rotation is not None:
+                angle_degrees = np.degrees(rotation)
+                cv2.putText(
+                    frame,
+                    f"Rotation: {angle_degrees:.1f} deg",
+                    (10, 110),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 0),
+                    2,
+                )
+
+        # Add basic instructions
+        cv2.putText(
+            frame,
+            "Press 'q' to quit",
+            (10, frame.shape[0] - 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+        )
+
+        # Show the frame
+        cv2.imshow("Hand Tracking Demo", frame)
+
+        # Break loop on 'q' press
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
-    # 释放资源
+    # Clean up
+    tracker.release()
     cap.release()
     cv2.destroyAllWindows()
 
